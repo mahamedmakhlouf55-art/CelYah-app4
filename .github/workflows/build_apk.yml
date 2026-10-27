@@ -1,58 +1,80 @@
-name: Build Celyah V14 APK
+
+name: Build CelYah APK
+
 on:
   workflow_dispatch:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+    paths:
+      - 'lib/**'
+      - 'assets/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/build_apk.yml'
+
 jobs:
   build:
+    name: Build Android Release APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    permissions:
+      contents: read
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
-      - name: Generate Android wrapper
-        run: flutter create --org com.celyah --project-name celyah --platforms=android app_build
-      - name: Copy source
+
+      - name: Check Flutter environment
+        run: flutter --version
+
+      - name: Generate Android project
         run: |
-          rm -rf app_build/lib
-          cp -r lib app_build/lib
-          cp pubspec.yaml app_build/pubspec.yaml
-          cp -r assets app_build/assets
-      - name: Install branded Android launcher icon and native splash
+          flutter create --platforms=android --project-name celyah .
+
+      - name: Fix Android launch background
         run: |
-          python3 -m pip install Pillow
-          python3 tools/install_branding.py
-      - name: Configure permissions
-        run: python3 tools/patch_manifest.py
-      - name: Install Android SDK 37
-        run: |
-          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37" || true
-      - name: Configure Android SDK
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('app_build/android/app/build.gradle.kts')
-          if p.exists():
-              s=p.read_text().replace('compileSdk = flutter.compileSdkVersion','compileSdk = 37')
-              p.write_text(s)
-          else:
-              p=Path('app_build/android/app/build.gradle')
-              if p.exists():
-                  s=p.read_text().replace('compileSdk flutter.compileSdkVersion','compileSdk 37')
-                  p.write_text(s)
-          PY
-      - name: Build
-        working-directory: app_build
-        run: |
-          flutter pub get
-          flutter build apk --release
-      - uses: actions/upload-artifact@v4
+          mkdir -p android/app/src/main/res/drawable-v21
+          cat > android/app/src/main/res/drawable-v21/launch_background.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+              <item>
+                  <shape android:shape="rectangle">
+                      <solid android:color="#0B0915" />
+                  </shape>
+              </item>
+          </layer-list>
+          XML
+          mkdir -p android/app/src/main/res/drawable
+          cp android/app/src/main/res/drawable-v21/launch_background.xml android/app/src/main/res/drawable/launch_background.xml
+
+      - name: Install Flutter packages
+        run: flutter pub get
+
+      - name: Accept Android SDK licenses
+        run: yes | flutter doctor --android-licenses || true
+
+      - name: Build release APK
+        run: flutter build apk --release --no-tree-shake-icons
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          name: Celyah-V14-Branded-APK
-          path: app_build/build/app/outputs/flutter-apk/app-release.apk
+          name: CelYah-Robot-APK
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
