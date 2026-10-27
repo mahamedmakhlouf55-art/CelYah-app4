@@ -83,16 +83,14 @@ jobs:
       - name: Install Flutter packages
         run: flutter pub get
 
-      - name: Accept Android SDK licenses
-        run: yes | flutter doctor --android-licenses || true
-
-      - name: Build release APK
-        run: flutter build apk --release --no-tree-shake-icons
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: CelYah-Robot-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
-          if-no-files-found: error
-          retention-days: 14
+      - name: Fix BLE plugin Android compile SDK
+        run: |
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import re
+          cache = Path.home() / '.pub-cache' / 'hosted' / 'pub.dev'
+          candidates = list(cache.glob('reactive_ble_mobile-*/android/build.gradle')) + list(cache.glob('reactive_ble_mobile-*/android/build.gradle.kts'))
+          if not candidates:
+              raise SystemExit('Could not find reactive_ble_mobile Android Gradle file after flutter pub get')
+          for path in candidates:
+              original = path.read_text()
