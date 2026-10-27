@@ -26,8 +26,69 @@ class Dashboard extends StatefulWidget {
   const Dashboard({super.key});
   @override State<Dashboard> createState()=>_DashboardState();
 }
-class _DashboardState extends State<Dashboard> {
+class _DashboardState extends State<Dashboard> with WidgetsBindingObserver {
   final RobotLink link=RobotLink();
+  Timer? _driveKeepAlive;
+  String? _heldDirection;
+  bool _driveSending = false;
+  bool _manualReady = false;
+
+  Future<void> _sendDrivePulse() async {
+    final direction = _heldDirection;
+    if (direction == null || !link.connected || _driveSending) return;
+    _driveSending = true;
+    try {
+      if (!_manualReady) {
+        await link.send('MODE:MANUAL');
+        _manualReady = true;
+      }
+      if (_heldDirection == direction) await link.send('DRIVE:$direction');
+    } finally {
+      _driveSending = false;
+    }
+  }
+
+  void _startDrive(String direction) {
+    if (!link.connected) { _notice('وصّل الروبوت بالبلوتوث الأول'); return; }
+    if (_heldDirection == direction) return;
+    _driveKeepAlive?.cancel();
+    _heldDirection = direction;
+    _manualReady = false;
+    _sendDrivePulse();
+    // The ESP32 has an 800ms watchdog; refresh at 200ms while held.
+    _driveKeepAlive = Timer.periodic(const Duration(milliseconds: 150), (_) {
+      if (!link.connected) { _stopDrive(); return; }
+      _sendDrivePulse();
+    });
+  }
+
+  void _stopDrive() {
+    _heldDirection = null;
+    _driveKeepAlive?.cancel();
+    _driveKeepAlive = null;
+    if (link.connected) link.send('STOP');
+  }
+
+  Widget _driveKey(String label, IconData icon, String direction) => Listener(
+    behavior: HitTestBehavior.opaque,
+    onPointerDown: (_) => _startDrive(direction),
+    onPointerUp: (_) => _stopDrive(),
+    onPointerCancel: (_) => _stopDrive(),
+    child: Container(
+      constraints: const BoxConstraints(minWidth: 112, minHeight: 70),
+      decoration: BoxDecoration(color: panel, borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: lavender.withValues(alpha: .5))),
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(icon, color: lavender, size: 32),
+        Text(label, style: const TextStyle(color: Colors.white)),
+      ]),
+    ),
+  );
+
+  @override void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _stopDrive();
+  }
+
   final TextEditingController chat=TextEditingController();
   final TextEditingController geminiKey=TextEditingController();
   final GeminiClient gemini=GeminiClient();
@@ -78,8 +139,9 @@ class _DashboardState extends State<Dashboard> {
 
   final List<(bool,String)> messages=[(false,'أهلاً! أنا Celyah 💜 اتصلي بيا عشان نبدأ مغامرتنا.')];
   String face='normal';
-  @override void initState(){super.initState();link.addListener(_refresh);
+  @override void initState(){super.initState();WidgetsBinding.instance.addObserver(this);link.addListener(_refresh);
     incoming=link.lines.listen((line){if(!mounted)return;
+      if(line.startsWith('OK:') || line.startsWith('ERR:')) return;
       if(line.startsWith('WIFI:')) {
         setState(() {
           if(line=='WIFI:SCANNING') {wifiScanning=true;wifiNetworks.clear();wifiInfo='جار البحث عن الشبكات...';}
@@ -147,6 +209,24 @@ class _DashboardState extends State<Dashboard> {
   Future<void> _chat() async {
     final s=chat.text.trim();
     if(s.isEmpty || chatBusy)return;
+    // Movement words must never reach Gemini, CHAT, TTS, or expressions.
+    // For safety, only on-screen hold buttons can initiate wheel motion.
+    final movement = s.toLowerCase().replaceAll(RegExp(r'[\s\u064b-\u065f]'), '');
+    const silentMotion = <String>{
+      'قدام','امام','أمام','للأمام','لقدام','اتقدم','تقدم',
+      'ورا','وراء','خلف','لورا','ارجع','للخلف',
+      'يمين','لليمين','شمال','يسار','لليسار',
+      'قف','وقف','توقف','ستوب','stop','forward','back','left','right'
+    };
+    if (silentMotion.contains(movement)) {
+      chat.clear();
+      await tts.stop();
+      if (movement == 'قف' || movement == 'وقف' || movement == 'توقف' ||
+          movement == 'ستوب' || movement == 'stop') {
+        _stopDrive();
+      }
+      return;
+    }
     setState((){chatBusy=true;messages.add((true,s));chat.clear();lastRobotMessage='Celyah بتفكر...';face='thinking';});
     try {
       if(useGemini && geminiKey.text.trim().isNotEmpty) {
@@ -172,7 +252,7 @@ class _DashboardState extends State<Dashboard> {
       if(mounted)setState(()=>chatBusy=false);
     }
   }
-  @override void dispose(){speech.cancel();tts.stop();visionTimer?.cancel();incoming?.cancel();link.removeListener(_refresh);link.dispose();chat.dispose();geminiKey.dispose();wifiSsid.dispose();wifiPassword.dispose();faceHost.dispose();camera.dispose();super.dispose();}
+  @override void dispose(){_stopDrive();WidgetsBinding.instance.removeObserver(this);speech.cancel();tts.stop();visionTimer?.cancel();incoming?.cancel();link.removeListener(_refresh);link.dispose();chat.dispose();geminiKey.dispose();wifiSsid.dispose();wifiPassword.dispose();faceHost.dispose();camera.dispose();super.dispose();}
   Widget _card(Widget child,{EdgeInsets? pad})=>Container(
     padding:pad??const EdgeInsets.all(20),decoration:BoxDecoration(color:panel,borderRadius:BorderRadius.circular(26),
       border:Border.all(color:lavender.withValues(alpha:.12))),child:child);
@@ -342,14 +422,18 @@ class _DashboardState extends State<Dashboard> {
         _button('STOP',Icons.stop_circle,()=>command('STOP'),primary:true),
       ]),
       const SizedBox(height:12),
-      _button('↑ أمام',Icons.keyboard_arrow_up,()=>command('DRIVE:F')),
+      const Text('اضغط باستمرار للتحرك، وارفع صباعك للتوقف فورًا.',
+        style: TextStyle(color:soft), textAlign:TextAlign.center),
+      const SizedBox(height:12),
+      Center(child:_driveKey('أمام',Icons.keyboard_arrow_up,'F')),
       const SizedBox(height:8),
-      Wrap(spacing:8,alignment:WrapAlignment.center,children:[
-        _button('← شمال',Icons.keyboard_arrow_left,()=>command('DRIVE:L')),
-        _button('يمين →',Icons.keyboard_arrow_right,()=>command('DRIVE:R')),
+      Row(mainAxisAlignment:MainAxisAlignment.center,children:[
+        _driveKey('شمال',Icons.keyboard_arrow_left,'L'),
+        const SizedBox(width:10),
+        _driveKey('يمين',Icons.keyboard_arrow_right,'R'),
       ]),
       const SizedBox(height:8),
-      _button('↓ خلف',Icons.keyboard_arrow_down,()=>command('DRIVE:B')),
+      Center(child:_driveKey('خلف',Icons.keyboard_arrow_down,'B')),
       const SizedBox(height:12),
       _button('إلغاء المحادثة',Icons.cancel_outlined,()=>command('CANCEL')),
       const SizedBox(height:15),
