@@ -45,34 +45,24 @@ jobs:
         run: |
           flutter create --platforms=android --project-name celyah .
 
-      - name: Install Android SDK 37
-        run: |
-          SDKMANAGER="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(command -v sdkmanager)"
-          fi
-          "$SDKMANAGER" --install "platforms;android-37"
-
-      - name: Set Android compileSdk to 37
+      - name: Pin BLE plugin to SDK 36 compatible release
         run: |
           python3 - <<'PYCODE'
           from pathlib import Path
           import re
-          p = Path('android/app/build.gradle.kts')
-          if p.exists():
-              s = p.read_text()
-              s, count = re.subn(r'(?m)^(\s*)compileSdk\s*=\s*[^\n]+', r'\g<1>compileSdk = 37', s, count=1)
+          p = Path('pubspec.yaml')
+          s = p.read_text()
+          s, n = re.subn(r'(?m)^(\s*flutter_reactive_ble:)\s*[^\n#]+', r'\g<1> 5.4.2', s, count=1)
+          if n != 1:
+              raise SystemExit('flutter_reactive_ble dependency missing in pubspec.yaml')
+          if 'dependency_overrides:' not in s:
+              s += '\ndependency_overrides:\n  reactive_ble_mobile: 5.4.2\n'
           else:
-              p = Path('android/app/build.gradle')
-              if not p.exists():
-                  raise SystemExit('Android Gradle app file not found')
-              s = p.read_text()
-              s, count = re.subn(r'(?m)^(\s*)compileSdk(?:Version)?\s+[^\n]+', r'\g<1>compileSdk 37', s, count=1)
-          if count != 1:
-              raise SystemExit('Could not locate compileSdk setting in ' + str(p))
+              s = re.sub(r'(?m)^(dependency_overrides:\s*\n)', r'\g<1>  reactive_ble_mobile: 5.4.2\n', s, count=1)
           p.write_text(s)
-          print('Updated', p, 'to compileSdk 37')
+          print('Pinned flutter_reactive_ble and reactive_ble_mobile to 5.4.2')
           PYCODE
+          rm -f pubspec.lock
 
       - name: Fix Android launch background
         run: |
